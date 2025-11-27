@@ -1,0 +1,6 @@
+@echo off
+echo Starting Python Backend on port 5328...
+start "Python Backend" python api/index.py
+
+echo Starting Next.js Frontend...
+npm run dev
