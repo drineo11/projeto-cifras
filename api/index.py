@@ -25,12 +25,24 @@ def generate():
         return jsonify({"error": "URL is required"}), 400
         
     # Strip fragment (e.g. #google_vignette=true)
+    target_key_index = None
     if '#' in url:
-        url = url.split('#')[0]
+        parts = url.split('#')
+        url = parts[0]
+        fragment = parts[1]
+        # Parse key=value from fragment
+        for param in fragment.split('&'):
+            if param.startswith('key='):
+                try:
+                    target_key_index = int(param.split('=')[1])
+                    print(f"DEBUG: Extracted key index from URL: {target_key_index}", file=sys.stderr)
+                except:
+                    pass
+
         
     try:
-        print(f"Processing URL: {url}", file=sys.stderr)
-        title, artist, key, lines = get_cifra_content(url)
+        print(f"Processing URL: {url} with key index: {target_key_index}", file=sys.stderr)
+        title, artist, key, lines = get_cifra_content(url, target_key_index)
         
         # Sanitize filename
         safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()

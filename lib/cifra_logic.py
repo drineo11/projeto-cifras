@@ -18,7 +18,89 @@ class PDF(FPDF):
         self.set_font('Helvetica', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', align='C')
 
-def get_cifra_content(url):
+NOTES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+NOTES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B']
+
+def get_note_index(note):
+    # Normalize note
+    note = note.replace('Cb', 'B').replace('B#', 'C').replace('Fb', 'E').replace('E#', 'F')
+    if note in NOTES_SHARP:
+        return NOTES_SHARP.index(note)
+    if note in NOTES_FLAT:
+        return NOTES_FLAT.index(note)
+    return -1
+
+def transpose_note(note, semitones, use_flats=False):
+    idx = get_note_index(note)
+    if idx == -1: return note
+    new_idx = (idx + semitones) % 12
+    return NOTES_FLAT[new_idx] if use_flats else NOTES_SHARP[new_idx]
+
+def transpose_chord(chord, semitones, use_flats=False):
+    # Split root and bass
+    parts = chord.split('/')
+    root_part = parts[0]
+    bass_part = parts[1] if len(parts) > 1 else None
+    
+    # Extract root note
+    root_len = 0
+    if len(root_part) > 1 and root_part[1] in ['#', 'b']:
+        root_len = 2
+    else:
+        root_len = 1
+    
+    root_note = root_part[:root_len]
+    suffix = root_part[root_len:]
+    
+    new_root = transpose_note(root_note, semitones, use_flats)
+    new_chord = new_root + suffix
+    
+    if bass_part:
+        bass_len = 0
+        if len(bass_part) > 1 and bass_part[1] in ['#', 'b']:
+            bass_len = 2
+        else:
+            bass_len = 1
+        bass_note = bass_part[:bass_len]
+        bass_suffix = bass_part[bass_len:]
+        
+        new_bass = transpose_note(bass_note, semitones, use_flats)
+        new_chord += '/' + new_bass + bass_suffix
+        
+    return new_chord
+
+def transpose_lines(lines, semitones, use_flats=False):
+    new_lines = []
+    for line in lines:
+        if is_chord_line(line):
+            new_line = []
+            for segment in line:
+                if segment.get('bold'): # It's a chord
+                    text = segment['text']
+                    parts = text.split(' ')
+                    new_parts = []
+                    for part in parts:
+                        if not part:
+                            new_parts.append('')
+                            continue
+                        # Simple check if part starts with note
+                        if part[0] in 'ABCDEFG':
+                            new_parts.append(transpose_chord(part, semitones, use_flats))
+                        else:
+                            new_parts.append(part)
+                    new_text = ' '.join(new_parts)
+                    
+                    new_segment = segment.copy()
+                    new_segment['text'] = new_text
+                    new_line.append(new_segment)
+                else:
+                    new_line.append(segment)
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+    return new_lines
+
+def get_cifra_content(url, target_key_index=None):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
@@ -73,6 +155,68 @@ def get_cifra_content(url):
     if current_line:
         lines.append(current_line)
     
+    # Transposition Logic
+    if target_key_index is not None and key:
+        try:
+            # Clean key text more robustly
+            clean_key = key.lower().replace("tom:", "").strip()
+            # Restore case for note parsing (first letter upper)
+            if clean_key:
+                clean_key = clean_key[0].upper() + clean_key[1:]
+            
+            original_key_note = clean_key
+            
+            print(f"DEBUG: Scraped key: '{key}', Cleaned: '{original_key_note}'", file=sys.stderr)
+            
+            # Handle minor keys? "Cm" -> "C"
+            is_minor = 'm' in original_key_note
+            if is_minor:
+                original_key_note = original_key_note.replace('m', '')
+            
+            original_idx = get_note_index(original_key_note)
+            print(f"DEBUG: Original Key Index: {original_idx}, Target (Cifra): {target_key_index}", file=sys.stderr)
+            
+            if original_idx != -1:
+                # Explicit mapping based on Cifra Club values
+                # C: key=3, D: key=5, E: key=7, F: key=8, G: key=10, A: key=0, B: key=2
+                # We map these to our chromatic index (0=C, 1=C#, etc.)
+                CIFRA_CLUB_KEY_MAP = {
+                    0: 9,   # A
+                    1: 10,  # A# / Bb
+                    2: 11,  # B
+                    3: 0,   # C
+                    4: 1,   # C# / Db
+                    5: 2,   # D
+                    6: 3,   # D# / Eb
+                    7: 4,   # E
+                    8: 5,   # F
+                    9: 6,   # F# / Gb
+                    10: 7,  # G
+                    11: 8   # G# / Ab
+                }
+                
+                if target_key_index in CIFRA_CLUB_KEY_MAP:
+                    target_chromatic_index = CIFRA_CLUB_KEY_MAP[target_key_index]
+                else:
+                    # Fallback to formula if key is outside 0-11 range (though unlikely)
+                    print(f"WARN: Unknown key index {target_key_index}, using formula.", file=sys.stderr)
+                    target_chromatic_index = (target_key_index + 9) % 12
+                
+                semitones = target_chromatic_index - original_idx
+                print(f"DEBUG: Target Chromatic: {target_chromatic_index}, Semitones: {semitones}", file=sys.stderr)
+                
+                # Determine target key name for display and accidental preference
+                # Heuristic for flats: F(5), Bb(10), Eb(3), Ab(8), Db(1)
+                use_flats = target_chromatic_index in [1, 3, 5, 8, 10]
+                
+                lines = transpose_lines(lines, semitones, use_flats)
+                
+                # Update key text
+                new_key_note = NOTES_FLAT[target_chromatic_index] if use_flats else NOTES_SHARP[target_chromatic_index]
+                key = f"Tom: {new_key_note}{'m' if is_minor else ''}"
+        except Exception as e:
+            print(f"Error transposing: {e}", file=sys.stderr)
+
     return title, artist, key, lines
 
 def is_chord_line(line_segments):
