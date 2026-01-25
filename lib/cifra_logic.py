@@ -141,7 +141,10 @@ def get_cifra_content(url, target_key_index=None):
     key_text = key_element.get_text(strip=True) if key_element else ""
     key = ""
     if key_text:
-        key = f"Tom: {key_text}"
+        if key_text.lower().startswith("tom:"):
+            key = key_text
+        else:
+            key = f"Tom: {key_text}"
 
     # Extract Cipher Content
     pre_content = soup.find('pre')
@@ -180,7 +183,7 @@ def get_cifra_content(url, target_key_index=None):
             # Example: "Tom: F# (forma dos acordes no tom de E)"
             # We need "E" if it exists, otherwise "F#"
             
-            clean_key = key.replace("Tom:", "").strip()
+            clean_key = re.sub(r'tom:', '', key, flags=re.IGNORECASE).strip()
             
             # Check for "forma dos acordes no tom de X"
             match = re.search(r"forma dos acordes no tom de\s+([A-G][#b]?)", clean_key, re.IGNORECASE)
