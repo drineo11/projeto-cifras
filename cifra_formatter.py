@@ -9,8 +9,7 @@ if __name__ == "__main__":
         print(f"Usando URL padrão: {url}")
     else:
         url = sys.argv[1]
-        if '#' in url:
-            url = url.split('#')[0]
+
 
     print(f"Processando: {url}")
     

@@ -1,4 +1,5 @@
 import requests
+import re
 from bs4 import BeautifulSoup
 from fpdf import FPDF
 import sys
@@ -104,8 +105,24 @@ def get_cifra_content(url, target_key_index=None):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
+
+    # Extract key index from URL if not provided
+    if target_key_index is None and '#' in url:
+        try:
+            fragment = url.split('#')[1]
+            for param in fragment.split('&'):
+                if param.startswith('key='):
+                    target_key_index = int(param.split('=')[1])
+                    print(f"DEBUG: Found key in URL: {target_key_index}", file=sys.stderr)
+                    break
+        except Exception as e:
+            print(f"DEBUG: Failed to parse key from URL: {e}", file=sys.stderr)
+
+    # Clean URL for request (remove fragment)
+    request_url = url.split('#')[0]
+
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(request_url, headers=headers)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         raise Exception(f"Erro ao acessar a URL: {e}")
@@ -121,9 +138,10 @@ def get_cifra_content(url, target_key_index=None):
 
     # Extract Key (Tom)
     key_element = soup.find('span', id='cifra_tom')
-    key = key_element.get_text(strip=True) if key_element else ""
-    if key:
-        key = f"Tom: {key}"
+    key_text = key_element.get_text(strip=True) if key_element else ""
+    key = ""
+    if key_text:
+        key = f"Tom: {key_text}"
 
     # Extract Cipher Content
     pre_content = soup.find('pre')
@@ -158,21 +176,38 @@ def get_cifra_content(url, target_key_index=None):
     # Transposition Logic
     if target_key_index is not None and key:
         try:
-            # Clean key text more robustly
-            clean_key = key.lower().replace("tom:", "").strip()
+            # Clean key text to find the base note
+            # Example: "Tom: F# (forma dos acordes no tom de E)"
+            # We need "E" if it exists, otherwise "F#"
+            
+            clean_key = key.replace("Tom:", "").strip()
+            
+            # Check for "forma dos acordes no tom de X"
+            match = re.search(r"forma dos acordes no tom de\s+([A-G][#b]?)", clean_key, re.IGNORECASE)
+            if match:
+                original_key_note = match.group(1).upper()
+                print(f"DEBUG: Detected 'forma dos acordes' key: {original_key_note}", file=sys.stderr)
+            else:
+                # Fallback to standard cleaning: take first note found
+                # Typically "Ab" or "C#m"
+                # Split by space to get the first chord/note part
+                first_part = clean_key.split(' ')[0]
+                original_key_note = first_part.strip()
+            
             # Restore case for note parsing (first letter upper)
-            if clean_key:
-                clean_key = clean_key[0].upper() + clean_key[1:]
+            if original_key_note:
+                 # Ensure first letter is upper, rest could be '#' or 'b' or 'm'
+                 original_key_note = original_key_note[0].upper() + original_key_note[1:]
             
-            original_key_note = clean_key
-            
-            print(f"DEBUG: Scraped key: '{key}', Cleaned: '{original_key_note}'", file=sys.stderr)
+            print(f"DEBUG: Scraped key: '{key}', Used Key Note: '{original_key_note}'", file=sys.stderr)
             
             # Handle minor keys? "Cm" -> "C"
             is_minor = 'm' in original_key_note
             if is_minor:
                 original_key_note = original_key_note.replace('m', '')
             
+            # Map flats to sharps for consistent index lookup if needed
+            # But get_note_index handles both
             original_idx = get_note_index(original_key_note)
             print(f"DEBUG: Original Key Index: {original_idx}, Target (Cifra): {target_key_index}", file=sys.stderr)
             
@@ -200,9 +235,15 @@ def get_cifra_content(url, target_key_index=None):
                 else:
                     # Fallback to formula if key is outside 0-11 range (though unlikely)
                     print(f"WARN: Unknown key index {target_key_index}, using formula.", file=sys.stderr)
-                    target_chromatic_index = (target_key_index + 9) % 12
+                    # Assuming standard chromatic offset if they change their system? 
+                    # Unlikely to match without map, but let's just mod 12
+                    target_chromatic_index = target_key_index % 12
+                
+                # Careful with semitone calculation:
+                # We need destination - source
                 
                 semitones = target_chromatic_index - original_idx
+                
                 print(f"DEBUG: Target Chromatic: {target_chromatic_index}, Semitones: {semitones}", file=sys.stderr)
                 
                 # Determine target key name for display and accidental preference
@@ -216,6 +257,8 @@ def get_cifra_content(url, target_key_index=None):
                 key = f"Tom: {new_key_note}{'m' if is_minor else ''}"
         except Exception as e:
             print(f"Error transposing: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
 
     return title, artist, key, lines
 
@@ -239,28 +282,80 @@ def is_header_line(line_segments):
     return text.startswith('[') and text.endswith(']')
 
 def deduplicate_sections(lines):
-    deduplicated_lines = []
-    seen_headers = set()
-    skip_mode = False
+    # First, group lines into sections
+    sections = []
+    current_section = {'header': None, 'body': []}
     
     for line in lines:
         if is_header_line(line):
-            text = "".join([s['text'] for s in line]).strip()
-            if text in seen_headers:
-                skip_mode = True
-                new_line = []
-                for s in line:
-                    new_s = s.copy()
-                    new_s['italic'] = True
-                    new_line.append(new_s)
-                deduplicated_lines.append(new_line)
-            else:
-                seen_headers.add(text)
-                skip_mode = False
-                deduplicated_lines.append(line)
+            # Save previous section if it has content or a header
+            if current_section['header'] or current_section['body']:
+                sections.append(current_section)
+            current_section = {'header': line, 'body': []}
         else:
-            if not skip_mode:
-                deduplicated_lines.append(line)
+            current_section['body'].append(line)
+            
+    # Append last section
+    if current_section['header'] or current_section['body']:
+        sections.append(current_section)
+    
+    # Now filter sections
+    final_sections = []
+    seen_headers = {} # Map header_text -> list of body_texts (string representation for comparison)
+    
+    for section in sections:
+        header_line = section['header']
+        body_lines = section['body']
+        
+        if header_line:
+            header_text = "".join([s['text'] for s in header_line]).strip()
+            
+            # Create a simplified string representation of the body for comparison
+            # We focus on the text content to detect chord changes
+            body_repr = ""
+            for line in body_lines:
+                for s in line:
+                    body_repr += s['text']
+            
+            if header_text in seen_headers:
+                # Check if this body matches any previously seen body for this header
+                is_duplicate = False
+                for seen_body in seen_headers[header_text]:
+                    if seen_body == body_repr:
+                        is_duplicate = True
+                        break
+                
+                if is_duplicate:
+                    # It's a duplicate, mark it as such (italic header only for PDF/Doc logic)
+                    # The layout logic might expect just the header line to indicate a skip?
+                    # Original logic: new_s['italic'] = True
+                    # We will append just the header (italicized) and NO body
+                    
+                    new_header = []
+                    for s in header_line:
+                        new_s = s.copy()
+                        new_s['italic'] = True
+                        new_header.append(new_s)
+                    
+                    final_sections.append({'header': new_header, 'body': []})
+                else:
+                    # It's a new variation (modulation!), keep it
+                    seen_headers[header_text].append(body_repr)
+                    final_sections.append(section)
+            else:
+                # First time seeing this header
+                seen_headers[header_text] = [body_repr]
+                final_sections.append(section)
+        else:
+            # No header (intro or loose lines), always keep
+            final_sections.append(section)
+            
+    # Flatten back to lines
+    deduplicated_lines = []
+    for section in final_sections:
+        if section['header']:
+            deduplicated_lines.append(section['header'])
+        deduplicated_lines.extend(section['body'])
                 
     return deduplicated_lines
 
