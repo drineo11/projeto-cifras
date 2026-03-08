@@ -9,6 +9,27 @@ from docx.shared import Pt, Cm
 from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 
+# Map of Unicode characters to ASCII equivalents for PDF (Courier font only supports Latin-1)
+UNICODE_REPLACEMENTS = {
+    '\u2013': '-',   # en-dash → hyphen
+    '\u2014': '-',   # em-dash → hyphen
+    '\u2018': "'",   # left single quote
+    '\u2019': "'",   # right single quote
+    '\u201c': '"',   # left double quote
+    '\u201d': '"',   # right double quote
+    '\u2026': '...', # ellipsis
+    '\u00a0': ' ',   # non-breaking space
+    '\u2022': '-',   # bullet
+    '\u2012': '-',   # figure dash
+    '\u2015': '-',   # horizontal bar
+}
+
+def sanitize_text_for_pdf(text):
+    """Replace Unicode characters unsupported by Courier font with ASCII equivalents."""
+    for unicode_char, replacement in UNICODE_REPLACEMENTS.items():
+        text = text.replace(unicode_char, replacement)
+    return text
+
 class PDF(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 15)
@@ -508,10 +529,10 @@ def generate_pdf_bytes(title, artist, key, lines):
     # Title: Bold + Underline
     pdf.set_font('Helvetica', 'BU', 14)
     # Reduced height from 7 to 5 to bring artist closer
-    pdf.cell(0, 5, title, new_x="LMARGIN", new_y="NEXT", align='C')
+    pdf.cell(0, 5, sanitize_text_for_pdf(title), new_x="LMARGIN", new_y="NEXT", align='C')
     
     pdf.set_font('Helvetica', '', 10)
-    pdf.cell(0, 7, artist, new_x="LMARGIN", new_y="NEXT", align='C')
+    pdf.cell(0, 7, sanitize_text_for_pdf(artist), new_x="LMARGIN", new_y="NEXT", align='C')
     
     # Header height calculation (Key removed)
     header_height = 15 # Adjusted base height
@@ -529,7 +550,7 @@ def generate_pdf_bytes(title, artist, key, lines):
     for line_segments in reflowed_lines:
         pdf.set_x(5)
         for segment in line_segments:
-            text = segment['text']
+            text = sanitize_text_for_pdf(segment['text'])
             is_bold = segment['bold']
             is_italic = segment.get('italic', False)
             
